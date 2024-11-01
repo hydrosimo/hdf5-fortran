@@ -10,12 +10,14 @@
 !   help@hdfgroup.org.                                                        *
 ! * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
 !
-! This example extends an HDF5 dataset popolated by compounds but simple.
+! This example extends an HDF5 dataset popolated by compounds and creation of a matrix
+! with variable length (filled by 0).
 
 program compound
 
 use hdf5 ! This module contains all necessary modules
 use iso_c_binding
+use iso_fortran_env
 
 implicit none
 
@@ -26,13 +28,16 @@ integer, parameter :: int_k16 = selected_int_kind(18) ! This should map to INTEG
 integer, parameter :: r_k4 = selected_real_kind(6,37) ! This should map to REAL*4 on most modern processors
 integer, parameter :: r_k8 = selected_real_kind(15,307) ! This should map to REAL*8 on most modern processors
 
-character(len=20), parameter :: filename = "compound.h5"
+character(len=20), parameter :: filename = "compound-matrix.h5"
 !dataset rank is 2 and name is "ExtendibleArray"
 character(len=20), parameter :: dsetname = "extendible_compound"
+character(len=20), parameter :: dsetmat = "extendible_matrix"
 integer :: RANK = 2, rank_arr = 1
 integer(hid_t) :: file_id       ! File identifier
 integer(hid_t) :: dset_id       ! Dataset identifier
+integer(hid_t) :: dset_id_mat   ! Dataset identifier
 integer(hid_t) :: dataspace     ! Dataspace identifier
+integer(hid_t) :: ds_mat        ! Dataspace identifier
 integer(hid_t) :: memspace      ! Memory dataspace identifier
 integer(hid_t) :: crp_list      ! Dataset creation property identifier
 
@@ -58,7 +63,7 @@ integer(hsize_t) :: i, j
 integer :: error
 !Variables used in reading data back
 integer(hsize_t), dimension(1:2) :: dimsr, maxdimsr
-integer :: rankr, ii, jj
+integer :: rankr, ii, jj, kk
 integer :: dt_start(8), dt_end(8), dt_start_tot(8), dt_end_tot(8)
 real :: start_time, finish_time, elapsed_time, hours, minutes, seconds
 real :: start_time_tot, finish_time_tot, elapsed_time_tot
@@ -75,6 +80,7 @@ type comp_type
 end type comp_type
 type(comp_type), target, dimension(1) :: caronte
 integer(hid_t) :: car_id     ! file datatype identifier
+integer(INT32), dimension(1,1) :: mat_el 
 
 integer(hsize_t), dimension(1) :: tdims1=(/7/)
 integer(hsize_t), dimension(1) :: tdims1a=(/4/)
@@ -92,9 +98,10 @@ dim_c = 10
 call h5open_f(error)
 !create a new file using default properties.
 call h5fcreate_f(filename, H5F_ACC_TRUNC_F, file_id, error)
-!create the data space with unlimited dimensions.
+!create the data space with unlimited dimensions for compound and matrix.
 maxdims = (/H5S_UNLIMITED_F, H5S_UNLIMITED_F/)
 call h5screate_simple_f(RANK, dims, dataspace, error, maxdims)
+call h5screate_simple_f(RANK, dims, ds_mat, error, maxdims)
 !modify dataset creation properties, i.e. enable chunking
 call h5pcreate_f(H5P_DATASET_CREATE_F, crp_list, error)
 call h5pset_layout_f(crp_list, H5D_CHUNKED_F, error)
@@ -110,10 +117,14 @@ call h5tinsert_f(car_id, "c", H5OFFSETOF(C_LOC(caronte(1)),C_LOC(caronte(1)%c)),
 ! create an array of integer datatype
 call h5tarray_create_f(h5kind_to_type(int_k16, H5_INTEGER_KIND), rank_arr, tdims1a, arr2_id, error)
 call h5tinsert_f(car_id, "d", H5OFFSETOF(C_LOC(caronte(1)),C_LOC(caronte(1)%d)), arr2_id, error)
+! create dataset for compound and matrix:
 call h5dcreate_f(file_id, dsetname, car_id, dataspace, &
      dset_id, error, crp_list)
+call h5dcreate_f(file_id, dsetmat, H5T_NATIVE_INTEGER, ds_mat, &
+     dset_id_mat, error, crp_list)
 call h5pclose_f(crp_list, error)
 call h5sclose_f(dataspace, error)
+call h5sclose_f(ds_mat, error)
 
 ! Inizializzazione del compound
 i = 0
@@ -125,6 +136,11 @@ caronte(1)%d(1:4) = (/i,i*2,i*3,i*4/)
 !Write data array to dataset
 f_ptr = C_LOC(caronte(1))
 call h5dwrite_f(dset_id, car_id, f_ptr, error)
+
+! Inizializzazione della matrice
+! mat_el(1,1) = 1
+! data_dims(1:2) = (/1,1/)
+! call h5dwrite_f(dset_id_mat, H5T_NATIVE_INTEGER, mat_el, data_dims, error)
 
 ! extend the dataset. 
 write(6,*) 'Extending dataset started:'
@@ -139,9 +155,9 @@ do ii=1,dim_r
     caronte(1)%b = jj*2
     caronte(1)%c = 1./REAL(jj+1)
     caronte(1)%d(1:4) = (/jj,jj*2,jj*3,jj*4/)
-    size(1:2)   = (/1,1+jj/)
+    size(1:2)   = (/1,1+jj/) ! qui indicano il numero di colonne e righe
     call h5dset_extent_f(dset_id, size, error)
-    offset(1:2) = (/0,jj/)
+    offset(1:2) = (/0,jj/)   ! qui indicano gli indici di colonne e righe
     count(1:2)  = (/1,1/)
     call h5dget_space_f(dset_id, dataspace, error)
     call h5sselect_hyperslab_f(dataspace, H5S_SELECT_SET_F, &
@@ -152,6 +168,30 @@ do ii=1,dim_r
           memspace, dataspace)
     ! se non facciamo questo close datapace la RAM cresce vertiginosamente.
     call h5sclose_f(dataspace, error)
+
+    !!! QUI STO TENTANDO DI ESTENDERE UNA MATRICE MA DA ERRORI DI SYNCHRO.
+    !!! PROVA A FARE UN ESEMPIO SEMPLICE SULL'ESTENSIONE DI UNA MATRICE CON 
+    !!! RIGHE VARIABILI DI LUNGHEZZA VIA VIA CRESCENTI.
+
+    ! Espandi la dimensione della matrice per la dimensione attuale di jj
+    size(1:2) = (/jj, jj/)
+    call h5dset_extent_f(dset_id_mat, size, error)
+    do kk=1,jj
+        mat_el(1,1) = kk
+        ! size(1:2) = (/kk,jj/)
+        ! call h5dset_extent_f(dset_id_mat, size, error)
+        offset(1:2) = (/kk-1,jj-1/)
+        ! count(1:2)  = (/1,1/)
+        count(1:2)  = (/1,1/)
+        call h5dget_space_f(dset_id_mat, ds_mat, error)
+        call h5sselect_hyperslab_f(ds_mat, H5S_SELECT_SET_F, &
+            offset, count, error)
+        data_dims(1:2) = (/1,1/)
+        call h5dwrite_f(dset_id_mat, H5T_NATIVE_INTEGER, mat_el, data_dims, error, &
+            memspace, ds_mat)
+        call h5sclose_f(ds_mat, error)  
+    end do
+
     perc=real(ii*jj)/real(dim_r*dim_c)
     if (floor(perc*100) >= cnt_perc) then   
         write(6,'(a,i6,a)') ''//achar(27)//'[38;2;253;252;187m ',int(cnt_perc),'% completed'//achar(27)//'[0m'
